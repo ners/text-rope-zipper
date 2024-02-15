@@ -1,9 +1,37 @@
 {-# OPTIONS_GHC -Wno-name-shadowing #-}
 
--- TODO: explicit export list for Data.Text.Rope.Zipper
-module Data.Text.Rope.Zipper where
+module Data.Text.Rope.Zipper
+    ( RopeZipper (..)
+    , Position (..)
+    , null
+    , cursor
+    , moveCursor
+    , setCursor
+    , lines
+    , lengthInLines
+    , toRope
+    , toText
+    , fromParts
+    , fromRope
+    , fromText
+    , splitFirstLine
+    , splitLastLine
+    , insertRope
+    , insertText
+    , insertChar
+    , deleteBefore
+    , deleteAfter
+    , moveForward
+    , moveBackward
+    , moveUp
+    , moveDown
+    , moveToLineStart
+    , moveToLineEnd
+    , moveToFirstLine
+    , moveToLastLine
+    )
+where
 
-import Control.Arrow (first, second)
 import Data.Ord (clamp)
 import Data.String (IsString (fromString))
 import Data.Text (Text)
@@ -11,15 +39,12 @@ import Data.Text qualified as Strict
 import Data.Text.Lazy qualified as Lazy
 import Data.Text.Lazy.Zipper (TextZipper (TextZipper))
 import Data.Text.Lazy.Zipper qualified as TextZipper
-import Data.Text.Rope (Rope)
+import Data.Text.Rope (Position (..), Rope)
 import Data.Text.Rope qualified as Rope
 import GHC.Generics (Generic)
 import GHC.Records qualified as GHC
-import Prelude
-
--- | The Cursor is the ordered pair of the current line (0 indexed) and
--- the current position of the cursor on the line.
-type Cursor = (Int, TextZipper.Cursor)
+import Util
+import Prelude hiding (lines, null)
 
 -- | A RopeZipper is similar in concept to a 'TextZipper', but tracks the
 -- lines before the cursor, lines after the cursor, and the current line of the
@@ -31,7 +56,7 @@ data RopeZipper = RopeZipper
     -- ^ The line the cursor is on
     , linesAfter :: !Rope
     -- ^ The lines after the cursor
-    , stickyCol :: !TextZipper.Cursor
+    , stickyCol :: !TextZipper.Position
     -- ^ The last requested cursor column. This is used to remember the
     -- column when moving between ends of lines of different lengths.
     }
@@ -61,113 +86,97 @@ instance Semigroup RopeZipper where
                 , ..
                 }
 
--- | Whether the whole 'RopeZipper' structure has a trailing newline after it.
-hasTrailingNewline :: RopeZipper -> Bool
-hasTrailingNewline RopeZipper{..} =
-    has linesAfter
-        || Rope.null linesAfter
-            && TextZipper.hasTrailingNewline currentLine
-  where
-    has (splitLastLine -> snd -> Lazy.unsnoc -> Just (_, '\n')) = True
-    has _ = False
-
 -- | Whether the whole 'RopeZipper' structure is empty.
 null :: RopeZipper -> Bool
 null RopeZipper{..} = Rope.null linesBefore && TextZipper.null currentLine && Rope.null linesAfter
 
--- | Get the current 'Cursor' position of the 'RopeZipper'.
-cursor :: RopeZipper -> Cursor
-cursor RopeZipper{..} = (row, col)
-  where
-    row = fromIntegral (Rope.lengthAsPosition linesBefore).posLine
-    col = currentLine.cursor
+-- | Get the current cursor position of the 'RopeZipper'.
+cursor :: RopeZipper -> Position
+cursor RopeZipper{..} =
+    Position
+        { posLine = (Rope.lengthAsPosition linesBefore).posLine
+        , posColumn = currentLine.cursor
+        }
 
-instance GHC.HasField "cursor" RopeZipper Cursor where
+instance GHC.HasField "cursor" RopeZipper Position where
     getField = cursor
 
 -- | Move the cursor relative to its current position.
-moveCursor :: (Cursor -> Cursor) -> RopeZipper -> RopeZipper
+moveCursor :: (Position -> Position) -> RopeZipper -> RopeZipper
 moveCursor f r
     -- for a positive change where the current line has a trailing newline OR
     -- there are lines after the current line
-    | (dy > 0)
+    | (newY > oldY)
         && (TextZipper.hasTrailingNewline r.currentLine || not (Rope.null r.linesAfter)) =
-        let (before, currentLine, linesAfter) = splitAtLine (fromIntegral $ dy - 1) r.linesAfter
+        let (before, currentLine, linesAfter) = splitAtLine (absDy - 1) r.linesAfter
          in RopeZipper
                 { linesBefore = r.linesBefore <> currentLineAsRope <> before
-                , stickyCol =
-                    if dx /= 0
-                        then min currentLine.cursor newX
-                        else r.stickyCol
+                , stickyCol = withStickyCol $ min currentLine.cursor
                 , ..
                 }
-    -- for a negative change that puts the row of the cursor at the start
-    | dy < 0 && newY == 0 =
-        let ( flip TextZipper.fromTextAt newX ->
+    -- for a negative change that puts the line of the cursor at the start
+    | newY < oldY && newY == 0 =
+        let ( flip TextZipper.fromTextAt (if absDx /= 0 then newX else r.stickyCol) ->
                     moveBackFromNewline -> currentLine
                 , linesAfter
                 ) = splitFirstLine $ r.linesBefore <> currentLineAsRope <> r.linesAfter
          in RopeZipper
                 { linesBefore = mempty
                 , currentLine
-                , stickyCol =
-                    if dx /= 0
-                        then min currentLine.cursor newX
-                        else r.stickyCol
+                , stickyCol = withStickyCol $ min currentLine.cursor
                 , ..
                 }
-    -- for a negative change that doesn't put the row of the cursor at the start
-    | dy < 0 && not (Rope.null r.linesBefore) =
+    -- for a negative change that doesn't put the line of the cursor at the start
+    | newY < oldY && not (Rope.null r.linesBefore) =
         let (linesBefore, currentLine, after) =
                 splitAtLine
-                    ((Rope.lengthAsPosition r.linesBefore).posLine - fromIntegral (negate dy))
+                    ((Rope.lengthAsPosition r.linesBefore).posLine - absDy)
                     r.linesBefore
          in RopeZipper
                 { linesAfter = after <> currentLineAsRope <> r.linesAfter
-                , stickyCol =
-                    if dx /= 0
-                        then min currentLine.cursor newX
-                        else r.stickyCol
+                , stickyCol = withStickyCol $ min currentLine.cursor
                 , ..
                 }
     -- in any other circumstance, just move the cursor within the line and reset
     -- the current cursor pos
     | otherwise =
-        let currentLine = moveBackFromNewline $ TextZipper.moveCursor (+ dx) r.currentLine
+        let currentLine = moveBackFromNewline $ TextZipper.setCursor newX r.currentLine
          in r
                 { currentLine
                 , stickyCol =
-                    if (r.stickyCol > currentLine.cursor && dx > 0)
-                        || (dy /= 0 && dx == 0)
+                    if (r.stickyCol > currentLine.cursor && absDx > 0)
+                        || (absDy /= 0 && absDx == 0)
                         then r.stickyCol
                         else currentLine.cursor
                 }
   where
-    (oldY, oldX) = r.cursor
-    (max 0 -> newY, max 0 -> newX) = f r.cursor
-    (dy, dx) = (newY - oldY, newX - oldX)
+    Position{posLine = oldY, posColumn = oldX} = r.cursor
+    Position{posLine = newY, posColumn = newX} = f r.cursor
+    absDy = absDelta newY oldY
+    absDx = absDelta newX oldX
+    withStickyCol f = if absDx == 0 then r.stickyCol else f newX
 
     currentLineAsRope = Rope.fromText . Lazy.toStrict . TextZipper.toText $ r.currentLine
     splitAtLine :: Word -> Rope -> (Rope, TextZipper, Rope)
     splitAtLine n rope =
         let (before, after) = Rope.splitAtLine (clamp (0, (Rope.lengthAsPosition rope).posLine) n) rope
             (current, after') = splitFirstLine after
-            stickyCol = if dx /= 0 then newX else r.stickyCol
+            stickyCol = if absDx /= 0 then newX else r.stickyCol
          in (before, moveBackFromNewline $ TextZipper.fromTextAt current stickyCol, after')
 
 -- | Move the cursor to the given absolute position.
-setCursor :: Cursor -> RopeZipper -> RopeZipper
+setCursor :: Position -> RopeZipper -> RopeZipper
 setCursor c = moveCursor (const c)
 
 lines :: RopeZipper -> [Text]
 lines = Rope.lines . toRope
 
 lengthInLines :: RopeZipper -> Word
-lengthInLines r@RopeZipper{..} = rowsBefore + currentLineLength + rowsAfter
+lengthInLines r@RopeZipper{..} = before + current + after
   where
-    rowsBefore = fromIntegral . fst . cursor $ r
-    currentLineLength = if TextZipper.null currentLine then 0 else 1
-    rowsAfter = Rope.lengthInLines linesAfter
+    before = posLine . cursor $ r
+    current = if TextZipper.null currentLine then 0 else 1
+    after = Rope.lengthInLines linesAfter
 
 toRope :: RopeZipper -> Rope
 toRope RopeZipper{..} =
@@ -255,37 +264,37 @@ deleteAfter r@RopeZipper{currentLine = TextZipper{afterCursor = "\n"}} = RopeZip
     stickyCol = currentLine.cursor
 deleteAfter RopeZipper{..} = RopeZipper{currentLine = TextZipper.deleteAfter currentLine, ..}
 
--- | Move the cursor to the previous character of the current row, if there is one. Does not change rows.
+-- | Move the cursor to the previous character of the current row, if there is one. Does not change lines.
 moveBackward :: RopeZipper -> RopeZipper
-moveBackward = moveCursor $ second pred
+moveBackward = moveCursor $ \c -> c{posColumn = boundedPred c.posColumn}
 
--- | Move the cursor to the next character of the current row, if there is one. Does not change rows.
+-- | Move the cursor to the next character of the current line, if there is one. Does not change lines.
 moveForward :: RopeZipper -> RopeZipper
-moveForward = moveCursor $ second succ
+moveForward = moveCursor $ \c -> c{posColumn = boundedSucc c.posColumn}
 
--- | Move the cursor to the previous row, trying to preserve the column.
+-- | Move the cursor to the previous line, trying to preserve the column.
 moveUp :: RopeZipper -> RopeZipper
-moveUp = moveCursor $ first pred
+moveUp = moveCursor $ \c -> c{posLine = boundedPred c.posLine}
 
--- | Move the cursor to the next row, trying to preserve the column.
+-- | Move the cursor to the next line, trying to preserve the column.
 moveDown :: RopeZipper -> RopeZipper
-moveDown = moveCursor $ first succ
+moveDown = moveCursor $ \c -> c{posLine = boundedSucc c.posLine}
 
 -- | Move the cursor to the start of the current line.
 moveToLineStart :: RopeZipper -> RopeZipper
-moveToLineStart = moveCursor $ second $ const 0
+moveToLineStart = moveCursor $ \c -> c{posColumn = minBound}
 
 -- | Move the cursor to the end of the current line.
 moveToLineEnd :: RopeZipper -> RopeZipper
-moveToLineEnd = moveCursor $ second $ const maxBound
+moveToLineEnd = moveCursor $ \c -> c{posColumn = maxBound}
 
--- | Move the cursor to the start of the current line.
-moveToStart :: RopeZipper -> RopeZipper
-moveToStart = moveCursor $ first $ const 0
+-- | Move the cursor to the first line, trying to preserve the column.
+moveToFirstLine :: RopeZipper -> RopeZipper
+moveToFirstLine = moveCursor $ \c -> c{posLine = minBound}
 
--- | Move the cursor to the end of the current line.
-moveToEnd :: RopeZipper -> RopeZipper
-moveToEnd = moveCursor $ first $ const maxBound
+-- | Move the cursor to the last line, trying to preserve the column.
+moveToLastLine :: RopeZipper -> RopeZipper
+moveToLastLine = moveCursor $ \c -> c{posLine = maxBound}
 
 -- If the cursor is after the final character and the final character is a newline,
 -- move backwards once.

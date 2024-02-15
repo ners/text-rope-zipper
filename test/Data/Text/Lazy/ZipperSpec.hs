@@ -7,7 +7,7 @@ import Data.Text.Lazy.Zipper
 import Data.Text.Lazy.Zipper qualified as Zipper
 import Util
 
-data Move = Backward | Forward | Start | End | Rel !Cursor | Abs !Cursor
+data Move = Backward | Forward | Start | End | Rel !Int | Abs !Position
     deriving stock (Eq, Show)
 
 instance Arbitrary Move where
@@ -26,7 +26,7 @@ moveZipper Forward = moveForward
 moveZipper Backward = moveBackward
 moveZipper Start = moveStart
 moveZipper End = moveEnd
-moveZipper (Rel i) = moveCursor (+ i)
+moveZipper (Rel i) = moveCursor $ boundedAdd i
 moveZipper (Abs i) = setCursor i
 
 spec :: Spec
@@ -55,11 +55,11 @@ spec = parallel $ modifyMaxSuccess (* 100) do
         zipper.cursor `shouldBe` fromIntegral (Text.length zipper.beforeCursor)
         let moveCursor' =
                 clamp (0, zipperLength) . case move of
-                    Backward -> pred
-                    Forward -> succ
+                    Backward -> boundedAdd (-1)
+                    Forward -> boundedAdd 1
                     Start -> const minBound
                     End -> const maxBound
-                    Rel i -> (+ i)
+                    Rel i -> boundedAdd i
                     Abs i -> const i
         let zipper' = moveZipper move zipper
         zipper'.cursor `shouldBe` moveCursor' zipper.cursor

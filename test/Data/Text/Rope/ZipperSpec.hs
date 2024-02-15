@@ -18,29 +18,67 @@ rawOutput =
         GaveUp{output} -> expectationFailure output
         NoExpectedFailure{output} -> expectationFailure output
 
-data Move = Backward | Forward | Up | Down | Start | End | Rel !Cursor | Abs !Cursor
+data Move
+    = Backward
+    | Forward
+    | Up
+    | Down
+    | LineStart
+    | LineEnd
+    | FirstLine
+    | LastLine
+    | Rel !(Int, Int)
+    | Abs !Position
     deriving stock (Eq, Show)
+
+instance Arbitrary Position where
+    arbitrary = do
+        posLine <- arbitrary
+        posColumn <- arbitrary
+        pure Position{..}
 
 instance Arbitrary Move where
     arbitrary =
         oneof
             [ pure Backward
             , pure Forward
-            , pure Start
-            , pure End
+            , pure LineStart
+            , pure LineEnd
             , Rel <$> arbitrary
             , Abs <$> arbitrary
             ]
+
+newtype VerticalMove = VerticalMove Move
+    deriving newtype (Eq, Show)
+
+instance Arbitrary VerticalMove where
+    arbitrary = VerticalMove <$> elements [Up, Down, FirstLine, LastLine]
 
 moveZipper :: Move -> RopeZipper -> RopeZipper
 moveZipper Forward = moveForward
 moveZipper Backward = moveBackward
 moveZipper Up = moveUp
 moveZipper Down = moveDown
-moveZipper Start = moveToLineStart
-moveZipper End = moveToLineEnd
-moveZipper (Rel (dy, dx)) = moveCursor $ \(y, x) -> (y + dy, x + dx)
+moveZipper LineStart = moveToLineStart
+moveZipper LineEnd = moveToLineEnd
+moveZipper FirstLine = moveToFirstLine
+moveZipper LastLine = moveToLastLine
+moveZipper (Rel (dy, dx)) = moveCursor $ \Position{..} ->
+    Position
+        { posLine = boundedAdd dy posLine
+        , posColumn = boundedAdd dx posColumn
+        }
 moveZipper (Abs c) = setCursor c
+
+positionToPair :: Position -> (Int, Int)
+positionToPair Position{..} = (fromIntegral posLine, fromIntegral posColumn)
+
+pairToPosition :: (Int, Int) -> Position
+pairToPosition (y, x) =
+    Position
+        { posLine = fromIntegral $ max 0 y
+        , posColumn = fromIntegral $ max 0 x
+        }
 
 spec :: Spec
 spec = parallel $ modifyMaxSuccess (* 100) do
@@ -69,36 +107,42 @@ spec = parallel $ modifyMaxSuccess (* 100) do
 
     it "moves" $ property $ \t1 t2 move -> do
         let zipper = fromParts (Rope.fromText t1) (Rope.fromText t2)
-            row = Text.count "\n" t1
-            col = Text.length . snd $ Text.breakOnEnd "\n" t1
-        zipper.cursor `shouldBe` (row, col)
+            cursor =
+                Position
+                    { posLine = fromIntegral $ Text.count "\n" t1
+                    , posColumn = fromIntegral . Text.length . snd $ Text.breakOnEnd "\n" t1
+                    }
+        zipper.cursor `shouldBe` cursor
         let t = t1 <> t2
             numLines = Text.count "\n" t + 1
             clampRow = clamp (0, numLines - 1)
             lineLength y = maybe 0 Text.length $ Text.lines t !? y
             clampCol (clampRow -> y, x) = (y, clamp (0, lineLength y) x)
-            moveCursor' (y, x) = clampCol $ case move of
+            moveCursor' (positionToPair -> (y, x)) = pairToPosition . clampCol $ case move of
                 Backward -> (y, x - 1)
                 Forward -> (y, x + 1)
                 Up -> (y - 1, x)
                 Down -> (y + 1, x)
-                Start -> (y, minBound)
-                End -> (y, maxBound)
+                LineStart -> (y, minBound)
+                LineEnd -> (y, maxBound)
+                FirstLine -> (minBound, x)
+                LastLine -> (maxBound, x)
                 Rel (dy, dx) -> (y + dy, x + dx)
-                Abs (y, x) -> (y, x)
+                Abs pos -> positionToPair pos
         let zipper' = moveZipper move zipper
         zipper'.cursor `shouldBe` moveCursor' zipper.cursor
         toRope zipper `shouldBe` toRope zipper'
 
     it "counts lines correctly" $ property $ \zipper -> do
-        lengthInLines zipper `shouldBe` (fromIntegral . length . RopeZipper.lines) zipper
+        lengthInLines zipper
+            `shouldBe` (fromIntegral . length . RopeZipper.lines) zipper
 
-    it "sticks the last requested column" $ property $ \zipper -> do
-        let test move = do
-                let (row, col) = zipper.cursor
-                let zipper' = moveZipper move zipper
-                let (_, col') = zipper'.cursor
-                col' `shouldBe` min col (fromIntegral $ TextZipper.length zipper'.currentLine)
-                moveCursor (first $ const row) zipper' `shouldBe` zipper
-        test Up
-        test Down
+    it "sticks the last requested column" $ property $ \zipper (VerticalMove move) -> do
+        let zipper' = moveZipper move zipper
+        let lineLen' =
+                fromIntegral
+                    $ TextZipper.length zipper'.currentLine
+                    - if TextZipper.hasTrailingNewline zipper'.currentLine then 1 else 0
+        let expectedColumn = min zipper.cursor.posColumn lineLen'
+        zipper'.cursor.posColumn `shouldBe` expectedColumn
+        moveCursor (\p -> p{posLine = zipper.cursor.posLine}) zipper' `shouldBe` zipper

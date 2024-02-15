@@ -13,6 +13,7 @@ module Util
     , module Test.Hspec.QuickCheck
     , module Test.QuickCheck
     , (!?)
+    , boundedAdd
     )
 where
 
@@ -31,10 +32,10 @@ import Data.Text.Rope qualified as Rope
 import Data.Text.Rope.Zipper (RopeZipper)
 import Data.Text.Rope.Zipper qualified as RopeZipper
 import Debug.Trace
-import Prelude
 import Test.Hspec
 import Test.Hspec.QuickCheck
 import Test.QuickCheck
+import Prelude
 
 instance Arbitrary Strict.Text where
     arbitrary = fromString <$> listOf (elements "abcdefg\n")
@@ -51,8 +52,11 @@ instance Arbitrary TextZipper where
 instance Arbitrary RopeZipper where
     arbitrary = RopeZipper.fromParts <$> arbitrary <*> arbitrary
 
-infixr !?
+infixr 9 !?
 
 -- | Get element n of a list, or Nothing. Like `!!` but safe.
 (!?) :: [a] -> Int -> Maybe a
 (!?) xs i = listToMaybe $ drop i xs
+
+boundedAdd :: Int -> Word -> Word
+boundedAdd delta = fromIntegral . clamp @Int (0, maxBound) . (+ delta) . fromIntegral

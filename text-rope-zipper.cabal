@@ -58,6 +58,8 @@ library
     exposed-modules:
         Data.Text.Lazy.Zipper,
         Data.Text.Rope.Zipper,
+    other-modules:
+        Util,
 
 test-suite spec
     import:           common

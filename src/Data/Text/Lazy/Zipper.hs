@@ -8,53 +8,54 @@ import Data.String (IsString (fromString))
 import Data.Text.Lazy (Text)
 import Data.Text.Lazy qualified as Text
 import GHC.Generics (Generic)
+import Util
 import Prelude
 
-type Cursor = Int
+type Position = Word
 
 data TextZipper = TextZipper
     { beforeCursor :: !Text
     -- ^ The text appearing before the cursor
     , afterCursor :: !Text
     -- ^ The text appearing after the cursor
-    , cursor :: !Cursor
+    , cursor :: !Position
     -- ^ The cursor's position in the line of text, i.e. the length of 'beforeCursor'
     }
     deriving stock (Generic, Eq, Show)
 
 -- | Modify the cursor position, updating the 'TextZipper' according to the
 -- change.
-moveCursor :: (Cursor -> Cursor) -> TextZipper -> TextZipper
-moveCursor f t
-    | newCursor <= 0 =
-        TextZipper
-            { beforeCursor = mempty
-            , afterCursor = t.beforeCursor <> t.afterCursor
-            , cursor = 0
-            }
-    | delta > 0 =
-        let (before, after) = Text.splitAt delta t.afterCursor
+moveCursor :: (Position -> Position) -> TextZipper -> TextZipper
+moveCursor f t = case compare newCursor t.cursor of
+    GT ->
+        let (before, after)
+                | absDelta > fromIntegral @Int64 maxBound = (t.afterCursor, "")
+                | otherwise = Text.splitAt (fromIntegral absDelta) t.afterCursor
          in TextZipper
                 { beforeCursor = t.beforeCursor <> before
                 , afterCursor = after
                 , cursor = t.cursor + fromIntegral (Text.length before)
                 }
-    | delta < 0 =
-        let (before, after) = splitAtEnd (negate delta) t.beforeCursor
+    LT ->
+        let (before, after)
+                | absDelta > fromIntegral @Int64 maxBound = ("", t.beforeCursor)
+                | otherwise = splitAtEnd (fromIntegral absDelta) t.beforeCursor
          in TextZipper
                 { beforeCursor = before
                 , afterCursor = after <> t.afterCursor
                 , cursor = t.cursor - fromIntegral (Text.length after)
                 }
-    | otherwise = t
+    EQ -> t
   where
     newCursor = f t.cursor
-    delta = fromIntegral $ newCursor - t.cursor
+    absDelta
+        | newCursor > t.cursor = newCursor - t.cursor
+        | otherwise = t.cursor - newCursor
     splitAtEnd len t = (Text.dropEnd len t, Text.takeEnd len t)
 
 -- | Set the position of the Cursor to a specific value. The state of the TextZipper
 -- will be updated to match the new position.
-setCursor :: Cursor -> TextZipper -> TextZipper
+setCursor :: Position -> TextZipper -> TextZipper
 setCursor i = moveCursor $ const i
 
 instance Monoid TextZipper where
@@ -99,7 +100,7 @@ instance IsString TextZipper where
     fromString = fromText . fromString
 
 -- | Create a 'TextZipper' from a 'Text' source, with the cursor at the specified position.
-fromTextAt :: Text -> Cursor -> TextZipper
+fromTextAt :: Text -> Position -> TextZipper
 fromTextAt t (max 0 -> fromIntegral -> i) = uncurry fromParts $ Text.splitAt i t
 
 -- | Create a 'TextZipper' by concatenating two 'Text' components, with the cursor between them.
@@ -142,11 +143,11 @@ deleteAfter = fst . splitAfter
 
 -- | Decrement the cursor.
 moveBackward :: TextZipper -> TextZipper
-moveBackward = moveCursor pred
+moveBackward = moveCursor boundedPred
 
 -- | Increment the cursor.
 moveForward :: TextZipper -> TextZipper
-moveForward = moveCursor succ
+moveForward = moveCursor boundedSucc
 
 -- | Move the cursor to the beginning of the text.
 moveStart :: TextZipper -> TextZipper
