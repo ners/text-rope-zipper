@@ -52,7 +52,7 @@ instance Arbitrary TextZipper where
 instance Arbitrary RopeZipper where
     arbitrary = RopeZipper.fromParts <$> arbitrary <*> arbitrary
 
-infixr 9 !?
+infixl 9 !?
 
 -- | Get element n of a list, or Nothing. Like `!!` but safe.
 (!?) :: [a] -> Int -> Maybe a
