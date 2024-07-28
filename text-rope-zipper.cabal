@@ -1,6 +1,6 @@
 cabal-version:       3.0
 name:                text-rope-zipper
-version:             0.1.0.0
+version:             0.1.1.0
 synopsis:            2D text zipper based on text-rope
 homepage:            https://github.com/ners/text-rope-zipper/blob/master/README.md
 license:             Apache-2.0

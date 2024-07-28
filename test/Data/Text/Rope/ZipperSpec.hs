@@ -9,6 +9,7 @@ import Data.Text.Rope qualified as Rope
 import Data.Text.Rope.Zipper
 import Data.Text.Rope.Zipper qualified as RopeZipper
 import Util
+import Data.Foldable (foldl')
 
 rawOutput :: (HasCallStack) => Property -> IO ()
 rawOutput =
@@ -54,21 +55,22 @@ newtype VerticalMove = VerticalMove Move
 instance Arbitrary VerticalMove where
     arbitrary = VerticalMove <$> elements [Up, Down, FirstLine, LastLine]
 
-moveZipper :: Move -> RopeZipper -> RopeZipper
-moveZipper Forward = moveForward
-moveZipper Backward = moveBackward
-moveZipper Up = moveUp
-moveZipper Down = moveDown
-moveZipper LineStart = moveToLineStart
-moveZipper LineEnd = moveToLineEnd
-moveZipper FirstLine = moveToFirstLine
-moveZipper LastLine = moveToLastLine
-moveZipper (Rel (dy, dx)) = moveCursor $ \Position{..} ->
-    Position
-        { posLine = boundedAdd dy posLine
-        , posColumn = boundedAdd dx posColumn
-        }
-moveZipper (Abs c) = setCursor c
+moveZipper :: [Move] -> RopeZipper -> RopeZipper
+moveZipper = flip . foldl' $ flip \case
+    Forward -> moveForward
+    Backward -> moveBackward
+    Up -> moveUp
+    Down -> moveDown
+    LineStart -> moveToLineStart
+    LineEnd -> moveToLineEnd
+    FirstLine -> moveToFirstLine
+    LastLine -> moveToLastLine
+    (Rel (dy, dx)) -> moveCursor \Position{..} ->
+        Position
+            { posLine = boundedAdd dy posLine
+            , posColumn = boundedAdd dx posColumn
+            }
+    (Abs c) -> setCursor c
 
 positionToPair :: Position -> (Int, Int)
 positionToPair Position{..} = (fromIntegral posLine, fromIntegral posColumn)
@@ -129,7 +131,7 @@ spec = parallel $ modifyMaxSuccess (* 100) do
                 LastLine -> (maxBound, x)
                 Rel (dy, dx) -> (y + dy, x + dx)
                 Abs pos -> positionToPair pos
-        let zipper' = moveZipper move zipper
+        let zipper' = moveZipper [move] zipper
         zipper'.cursor `shouldBe` moveCursor' zipper.cursor
         toRope zipper `shouldBe` toRope zipper'
 
@@ -138,11 +140,18 @@ spec = parallel $ modifyMaxSuccess (* 100) do
             `shouldBe` (fromIntegral . length . RopeZipper.lines) zipper
 
     it "sticks the last requested column" $ property $ \zipper (VerticalMove move) -> do
-        let zipper' = moveZipper move zipper
+        let zipper' = moveZipper [move] zipper
         let lineLen' =
-                fromIntegral
-                    $ TextZipper.length zipper'.currentLine
-                    - if TextZipper.hasTrailingNewline zipper'.currentLine then 1 else 0
+                fromIntegral $
+                    TextZipper.length zipper'.currentLine
+                        - if TextZipper.hasTrailingNewline zipper'.currentLine then 1 else 0
         let expectedColumn = min zipper.cursor.posColumn lineLen'
         zipper'.cursor.posColumn `shouldBe` expectedColumn
         moveCursor (\p -> p{posLine = zipper.cursor.posLine}) zipper' `shouldBe` zipper
+
+    it "unsticks the last requested column" do
+        let zipper = fromText "main :: IO ()\nmain = pure ()"
+            lefts = 4 :: Int
+            ups = 1 :: Int
+            zipper' = zipper & moveZipper (replicate lefts Backward <> replicate ups Up)
+        zipper'.cursor `shouldBe` Position{posLine = zipper.cursor.posLine - fromIntegral ups, posColumn = zipper.cursor.posColumn - fromIntegral lefts}

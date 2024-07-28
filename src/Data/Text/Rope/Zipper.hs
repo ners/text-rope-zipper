@@ -43,8 +43,8 @@ import Data.Text.Rope (Position (..), Rope)
 import Data.Text.Rope qualified as Rope
 import GHC.Generics (Generic)
 import GHC.Records qualified as GHC
-import Util
 import Prelude hiding (lines, null)
+import Util
 
 -- | A RopeZipper is similar in concept to a 'TextZipper', but tracks the
 -- lines before the cursor, lines after the cursor, and the current line of the
@@ -144,10 +144,9 @@ moveCursor f r
          in r
                 { currentLine
                 , stickyCol =
-                    if (r.stickyCol > currentLine.cursor && absDx > 0)
-                        || (absDy /= 0 && absDx == 0)
-                        then r.stickyCol
-                        else currentLine.cursor
+                    if absDx > 0 && absDy == 0 && r.currentLine.cursor /= currentLine.cursor
+                        then currentLine.cursor
+                        else r.stickyCol
                 }
   where
     Position{posLine = oldY, posColumn = oldX} = r.cursor
