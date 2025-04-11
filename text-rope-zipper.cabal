@@ -22,11 +22,12 @@ common common
     ghc-options:
         -Weverything
         -Wno-unsafe
-        -Wno-missing-safe-haskell-mode
+        -Wmissing-role-annotations
+        -Wno-all-missed-specialisations
         -Wno-missing-export-lists
         -Wno-missing-import-lists
         -Wno-missing-kind-signatures
-        -Wno-all-missed-specialisations
+        -Wno-missing-safe-haskell-mode
     default-extensions:
         ApplicativeDo
         BlockArguments
